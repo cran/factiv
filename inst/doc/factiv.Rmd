@@ -1,0 +1,119 @@
+---
+title: "Introduction to factiv"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    keep_md: true
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Introduction to factiv}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, echo=FALSE}
+library(knitr)
+opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# factiv: Noncompliance and Instrumental Variables in Factorial Experiments
+
+The factiv package allows analysts to address noncompliance in $2^K$ factorial experiments using instrumental variables methods. The package implements the methods of @BlaPas21. A $2^K$ factorial experiment randomly assigns units to $2^K$ possible treatment combinations of $K$ binary factors, and allows analysts to estimate the main and interactive effects of the factors, which we call factorial effects. 
+
+With noncompliance, the factorial effects of treatment uptake are not identified since noncompliance might be related to the outcomes. @BlaPas21 introduce a set of complier-average factorial effects that factiv is designed to estimate. 
+
+## What are factorial effects?
+
+In factorial experiments, several factors are being randomized at the same time. The `newhaven` data in the factiv package gives one example of such a factorial experiment involving a get-out-the-vote experiment where households were randomly assigned to receive (a) in-person canvassing or not, and (b) phone canvassing or not. Thus, in this experiment (which we call a 2x2 factorial design), there are four possible treatment assignments corresponding to the four combinations of the two binary treatments.
+
+```{r gotv_tab}
+library(factiv)
+data(newhaven)
+table(
+  `In-Person` = newhaven$inperson_rand,
+  `Phone` = newhaven$phone_rand
+)
+```
+
+In factorial experiments, there are two types of quantities of interest we may want to estimate: main effects and interactions. Main effects are defined as the effect of one factor, marginalizing over the assignment of the other factor. For the `newhaven` experiment in-person canvassing, this would be the average of the effect of in-person canvassing when assigned phone contact and the effect when assigned to no phone contact. An interaction is how the effect of a factor changes as a function of another factor. The in-person/phone interaction, then is the *difference* between the effect of in-person canvassing when assigned phone contact and the effect when not assigned to phone contact. These quantities of interest can be easily estimated using functions of sample means within each treatment combination. 
+
+## What is noncompliance?
+
+Noncompliance occurs when respondents don't take their assigned treatment. We say that treatment uptake differs from treatment assignment. We can see this in the `newhaven` experiment, with phone canvassing:
+
+```{r noncomp}
+table(
+  `Phone Assignment` = newhaven$phone_rand,
+  `Phone Uptake` = newhaven$phone
+)
+```
+
+Only `r sum(newhaven$phone)` of the `r sum(newhaven$phone_rand)` household assigned to the phone canvassing actually received the canvassing. Much of this noncompliance occurs because household do not answer their phones or hang up once they hear the call is a canvasser. Because the decision to comply (answer the phone) is likely correlated with the ultimate outcome, voting, we might worry that using treatment uptake might lead to biased estimates. 
+
+## Complier effects in factorial experiments
+
+To overcome these issues, factiv takes an instrumental variables approach and focuses on estimating the factorial effect among *compliers*, or those respondents who would comply with their assigned treatment. @BlaPas21 identified two types of complier effects in the factorial setting: marginalized complier average factorial effects (MCAFEs) and perfect complier average factorial effects (PCAFE). These effects are simplest to understand for main effects:
+
+- **Main-effect MCAFEs**: the main effect of a factor effect among those who would comply with the factor, regardless of how they would comply on other factors. 
+- **Main-effect PCAFEs**: the main effect of a factor effect among those who would comply with **all** factors.
+
+For instance, in the `newhaven` data, the MCAFE for phone canvassing is the main factorial effect of (actual) phone canvassing among those who would pick up a phone call when called, regardless of how they would comply with in-person canvassing. The PCAFE would be the same effect for respondents who comply with both factors. 
+
+For interaction, we refer to the *active factors* as the set of factors being interacted. Then we can define our quantities for interactions:
+
+- **Interaction MCAFEs**: the interaction between factors among those who would comply with those active factors, regardless of how they would comply on other factors. 
+- **Interaction PCAFEs**: the interaction between factors among those who would comply with **all** factors.
+
+Finally, we note that these interpretations of the  quantities of interest depend on several instrumental variable assumptions detailed in @BlaPas21. These include monotoncity of the effects and two exclusion restrictions. The first, the *outcome exclusion restriction*, requires treatment assignment to only affect the outcome through treatment uptake. The second, the *treatment exclusion restriction*, requires assignment of each factor to only affect the uptake on that factor and not any others. For more details on these assumptions and the interpretation of these quantities of interest when the assumptions do not hold, see @BlaPas21. 
+
+## Estimating complier effects with factiv
+
+factiv provides two ways of estimating the complier effects that differ in how they treat uncertainty. The first is a finite-population (or finite-sample) approach that treats outcomes as fixed and views treatment assignment as the only source of variation. 
+
+The `iv_finite_factorial()` function will provide these estimates, along with confidence intervals. To specify the model, you can provide a formula with two right-hand side parts separated by `|` that indicate the treatment uptake variables for each factor (on the left of `|`) and the treatment assignment variables for each factor (on the right of `|`). For the `newhaven` data, we have:
+
+```{r finite}
+out <- iv_finite_factorial(turnout_98 ~ inperson + phone | inperson_rand +
+                             phone_rand, data = newhaven)
+summary(out)
+```
+
+factiv also provides methods for accessing tidy versions of the output from its estimation function via the broom package. 
+
+```{r tidy}
+tidy(out)
+```
+
+In this tidy output, there are columns for 2 sets of confidence intervals. This is because the approach to confidence intervals we use, which we call the Fieller method, can sometimes produce disjoint (or infinite-length) confidence intervals if compliance is very low. 
+
+The second estimation approach factiv implements is based on a superpopulation approach to inference. In this setting, we consider our sample as a random sample from an infinite superpopulation and entertain variation from both treatment assignment and that sampling process. The `iv_factorial()` function implements this approach:
+
+```{r superpopulation}
+out_sp <- iv_factorial(turnout_98 ~ inperson + phone | inperson_rand +
+                      phone_rand, data = newhaven)
+summary(out_sp)
+```
+
+The superpopulation approach also has a tidy method:
+
+```{r sp_tidy}
+tidy(out_sp, conf.int = TRUE)
+```
+
+Here, the confidence intervals are based on the usual large-sample variance estimates from the delta method and so will never be disjoint. 
+
+## Covariate profiling
+
+One downside to estimating complier effects is that we generally cannot identify which respondents are or are not part of each group. Fortunately, @BlaPas21 showed how to estimate profiles of the different complier groups in terms of covariate means. factiv can implement this approach in the `compliance_profile()` function. You can pass this function a similar formula to the estimation functions above, with additional third part separated by a `|` that indicates which covariates you would like to use in the profile:
+
+```{r compliance_profile}
+cov_prof <- compliance_profile(
+  ~ inperson + phone | inperson_rand + phone_rand |
+    age + maj_party + turnout_96,
+  data = newhaven)
+cov_prof
+```
+
+This function return a data frame with sample averages of each covariate within each marginal complier group and the perfect complier group (which is the group associated with the highest-order interaction). For example, in the `newhaven` output, we see that the marginal compliers for phone canvassing  are estimated to be on average roughly `r round(cov_prof$raw_table$phone[1], 1)` years old compare to `r round(cov_prof$raw_table$overall[1], 1)` in the sample overall. The `std_table` reports the relative difference between each group's mean and the overall mean (in terms of standard deviations of the overall sample). 
+
+## References
